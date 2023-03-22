@@ -1,0 +1,941 @@
+---
+title: "efa cfa_10.7"
+author: "L. Gebrekristos"
+date: "10/7/2022"
+output: pdf_document
+always_allow_html: true 
+---
+
+## Purpose
+Conduct exploratory and confirmatory factor analysis (EFA & CFA) to create measures of discrimination.
+
+```{r setup, include=FALSE} 
+#determining width for pdf
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 70), tidy = TRUE)
+#function to load needed packages. will use in next chunk of code
+loadpackages <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+```
+```{r packages,warning=FALSE,message=FALSE,results='hide'}
+#needed packages
+packages <- c("haven", "lavaan", "tidyverse", "ggplot2", "psych", "reshape2","dplyr","pander","kableExtra")
+loadpackages(packages)
+
+#import data
+indi_all<-read_sas("folder/data.sas7bdat")
+#split data for efa/cfa (using U.S)
+indi<-indi_all %>%
+  filter(Q5US_1 %in% c(0,1))
+#split data for cfa (using Canada)
+indi_cfa<-indi_all %>%
+  filter(Q5CAN_1 %in% c(0,1))
+```
+## Minor 
+```{r functions correlation,echo=FALSE}
+#hiding this chunk of code in the pdf to save space using "echo=FALSE" in line above. 
+
+#creating a function for plotting correlation matrix for both minor and major
+corrplot<-function (matrix, title, label) { 
+  upper_d<- matrix
+  upper_d[lower.tri(upper_d)] <- NA
+  up_d <- melt(upper_d, na.rm = TRUE)
+  ggplot(data = up_d, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient2(midpoint = 0.5, mid ="grey70", limits = c(-1, +1)) +
+    labs(title = title, 
+         x = "", y = "", fill = "Correlation \n Measure") +
+    theme(legend.position="none",plot.title = element_text(hjust = 0.5, colour = "black"),axis.text.x=element_text(angle = 45, vjust = 1, hjust=1))+
+    scale_y_discrete(labels=label)+ scale_x_discrete(labels=label)+
+    geom_text(aes(x = Var1, y = Var2, label = round(value, 2)), color = "black", 
+              fontface = "bold", size = 3)
+}
+```
+### Correlations  
+Examining polychoric correlations for minor.\
+**Minor items are strongly correlated with each other**
+```{r corr for minor}
+#items in minor
+d2dlabel<-c("label1","label2","label3","label4","label5","label6","label7","label8","label9")
+
+#polychoric correlations for items
+vars_d<-indi%>%
+  select(minor10:minor18)
+poly_cor = polychoric(vars_d)
+rho_d = poly_cor$rho
+#saving correlations for parallel analysis/scree plot below
+save(rho_d, file = "polychoric_d")
+#plotting correlation matrix
+corrplot(rho_d,"Polychoric Correlations",d2dlabel)
+```
+
+### Scree Plot
+
+```{r scree plot,fig.show='hide'}
+load("polychoric_d")
+eigen<-round(fa.parallel(rho_d, fm="wls", fa="fa",n.obs=nrow(indi), main = "Scree Plot for minor")$pc.values,2)
+```
+
+| 1   |2|3|4|5|6|7|8|
+| :---|:----:|:----:|:----:|:---:|:---:|:---:|---:|         
+| `r eigen[1]`|`r eigen[2]`|`r eigen[3]`|`r eigen[4]`|`r eigen[5]`|`r eigen[6]`|`r eigen[7]`|`r eigen[8]`|
+
+### EFA/CFA
+EFA/CFA using diagonally weighted least squares (WLSMV) as the estimation method because of non-normal data.^[1]^ Fitting 1 factor and 2 factors models. 
+```{r function for minor,echo=FALSE}
+#hiding this chunk code for the pdf to save space by using "echo=FALSE" in line above. 
+
+#creating function to plot factor loadings for each EFA (use function in next chunk of code)
+efaplot<-function(model,title) {
+  standardizedsolution(model) %>% 
+    filter(op == "=~") %>% 
+    mutate(item  = str_remove(rhs, "minor") %>% as.double(),
+           factor = str_remove(lhs, "df")) %>% 
+    ggplot(aes(x = est.std, xmin = ci.lower, xmax = ci.upper, y = item)) +
+    annotate(geom = "rect",
+             xmin = -1, xmax = 1.05,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey90") +
+    annotate(geom = "rect",
+             xmin = -0.7, xmax = 0.7,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey93") +
+    annotate(geom = "rect",
+             xmin = -0.4, xmax = 0.4,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey96") +
+    geom_vline(xintercept = 0, color = "white") +
+    geom_pointrange(aes(alpha = abs(est.std) < 0.4),
+                    fatten = 5) +
+    geom_text(aes(label = item, color = abs(est.std) < 0.4),
+              size = 2) +
+    scale_color_manual(values = c("white", "transparent")) +
+    scale_alpha_manual(values = c(1, 1/3)) +
+    scale_x_continuous(expression(lambda[standardized]), 
+                       expand = c(0, 0), limits = c(-1, 1.05),
+                       breaks = c(-1, -0.7, -0.4, 0, 0.4, 0.7, 1),
+                       labels = c("-1", "-.7", "-.4", "0", ".4", ".7", "1")) +
+    scale_y_continuous(labels=d2dlabel,breaks = 10:18, sec.axis =  sec_axis(~ . * 1,labels=d2dlabel, breaks = 10:18)) +
+    ggtitle(title) +
+    theme(legend.position = "none") +
+    facet_wrap(~ factor, labeller = label_both)
+}
+
+#function to create table to compare fit statistics
+#used in chunk of code after plots of factor loadings
+modelsummary<- function (m1sum,m2sum){
+  model1<- c(m1sum$FIT[6],m1sum$FIT[8],m1sum$FIT[19],m1sum$FIT[20],m1sum$FIT[27])
+  model2<- c(m2sum$FIT[6],m2sum$FIT[8],m2sum$FIT[19],m2sum$FIT[20],m2sum$FIT[27])
+  model<-data.frame(rbind(model1,model2))
+  colnames(model) <- c('Chi-squared','Chi-squared p-value','CFI','TFI','RMSEA')
+  rownames(model) <- c('1 factor solution','2 factor solution')
+  model<-round(model,3)
+  model<-model %>%
+    mutate(`Chi-squared p-value`=ifelse(`Chi-squared p-value`==0,"<.0001",`Chi-squared p-value`))
+  model
+}
+
+#function for cfa summary
+modelsummary1<- function (m1sum,title){
+  model1<- c(m1sum$FIT[6],m1sum$FIT[8],m1sum$FIT[19],m1sum$FIT[20],m1sum$FIT[27])
+  model<-data.frame(rbind(model1))
+  colnames(model) <- c('Chi-squared','Chi-squared p-value','CFI','TFI','RMSEA')
+  rownames(model) <- title
+  model<-round(model,3)
+  model<-model %>%
+    mutate(`Chi-squared p-value`=ifelse(`Chi-squared p-value`==0,"<.0001",`Chi-squared p-value`))
+  model
+}
+
+#function for second order summary
+modelsummary2<-function(secondsum,title){
+model1<- c(secondsum$FIT[3],secondsum$FIT[5],secondsum$FIT[9],secondsum$FIT[10],secondsum$FIT[17])
+  model<-data.frame(rbind(model1))
+  colnames(model) <- c('Chi-squared','Chi-squared p-value','CFI','TFI','RMSEA')
+  rownames(model) <- title
+  model<-round(model,3)
+  model<-model %>%
+    mutate(`Chi-squared p-value`=ifelse(`Chi-squared p-value`==0,"<.0001",`Chi-squared p-value`))
+  model
+}
+```
+
+```{r,results='hide'}
+#1 factor model
+d2d_1m<-'efa("efa")*df1 =~ minor10 + minor11 + minor12 + minor13 + minor14 + minor15 + 
+minor16 + minor17 + minor18'
+d2d_efaf1 <- cfa(model = d2d_1m,
+                 data = indi,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+#summary stats
+d2dsum1<-summary(d2d_efaf1,fit.measures=TRUE)
+
+#2 factor model
+d2d_2m<-'efa("efa")*df1 +
+efa("efa")*df2 =~ minor10 + minor11 + minor12 + minor13 + minor14 + minor15 + minor16 +
+minor17 + minor18'
+d2d_efaf2 <- cfa(model = d2d_2m,
+                 data = indi,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+#summary stats
+d2dsum2<-summary(d2d_efaf2,fit.measures=TRUE)
+```
+
+```{r plots d2d, fig.show='hide'}
+#NOT PRINTING PLOTS FOR SPACE (remove "fig.show="hide"" to print)
+#plot loadings for 1 factor solution
+efaplot(d2d_efaf1,"EFA/CFA: minor factor loadings for 1 factor model")
+
+#plot loadings for 2 factor solution
+efaplot(d2d_efaf2,"EFA/CFA: minor factor loadings for 2 factors model")
+```
+
+**In the 2 factor solution, "minor11" has a much lower factor loading($\lambda$) than the other two items in Factor 1, "minor13" and "minor10", ($\lambda$=0.63 vs 0.86 or 0.91, respectively).**\
+**In the 1 factor solution, all items have high $\lambda$: 0.83-0.88**
+  
+### Comparing fit statistics
+```{r day2day fit stats,results='hide'}
+#table with fit statistics for EFA/CFA
+modelsummary(d2dsum1,d2dsum2)
+```
+```{r}
+#Modification Indices (MI) and Standardized Expected Parameter Change (SEPC): 1-factor solution
+m1<-modindices(d2d_efaf1,sort=TRUE) 
+```
+```{r change names,echo=FALSE}
+m1$lhs<-ifelse(m1$lhs=="minor10",d2dlabel[1],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor11",d2dlabel[2],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor12",d2dlabel[3],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor13",d2dlabel[4],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor14",d2dlabel[5],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor15",d2dlabel[6],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor16",d2dlabel[7],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor17",d2dlabel[8],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="minor18",d2dlabel[9],m1$lhs)
+m1$rhs<-ifelse(m1$rhs=="minor10",d2dlabel[1],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor11",d2dlabel[2],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor12",d2dlabel[3],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor13",d2dlabel[4],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor14",d2dlabel[5],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor15",d2dlabel[6],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor16",d2dlabel[7],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor17",d2dlabel[8],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="minor18",d2dlabel[9],m1$rhs)
+m1 %>%
+  as_tibble()%>%
+  filter(mi>=3)%>%
+  select(lhs,op,rhs,mi)%>%
+  pander(caption="MI for 1-factor solution")
+m1 %>%
+  as_tibble()%>%
+  filter(mi>=3)%>%
+  select(lhs,op,rhs,sepc.all)%>%
+  pander(caption="EPC for 1-factor solution")
+```
+```{r}
+#Modification Indices (MI) and Standardized Expected Parameter Change (SEPC): 2-factor solution
+m2<-modindices(d2d_efaf2,sort=TRUE) 
+```
+```{r,echo=FALSE}
+m2$lhs<-ifelse(m2$lhs=="minor10",d2dlabel[1],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor11",d2dlabel[2],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor12",d2dlabel[3],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor13",d2dlabel[4],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor14",d2dlabel[5],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor15",d2dlabel[6],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor16",d2dlabel[7],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor17",d2dlabel[8],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="minor18",d2dlabel[9],m2$lhs)
+m2$rhs<-ifelse(m2$rhs=="minor10",d2dlabel[1],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor11",d2dlabel[2],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor12",d2dlabel[3],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor13",d2dlabel[4],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor14",d2dlabel[5],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor15",d2dlabel[6],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor16",d2dlabel[7],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor17",d2dlabel[8],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="minor18",d2dlabel[9],m2$rhs)
+m2 %>%
+  as_tibble() %>%
+  filter(mi>=3)%>%
+  select(lhs,op,rhs,mi)%>%
+  pander(caption="MI for 2-factor solution")
+m2 %>%
+  as_tibble() %>%
+  filter(mi>=3)%>%
+  select(lhs,op,rhs,sepc.all)%>%
+  pander(caption="EPC for 2-factor solution")
+```
+
+### Including residual correlation in EFA/CFA
+```{r,results='hide',fig.show='hide'}
+#1 factor model with joke/laugh about you~~called names/insults
+d2d_1mrc<-'efa("efa")*df1 =~ minor10 + minor11 + minor12 + minor13 + minor14 + 
+minor15 + minor16 + minor17 + minor18
+minor10~~minor12'
+d2d_efaf1rc <- cfa(model = d2d_1mrc,
+                 data = indi,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+d2d_efaf1sumrc<-summary(d2d_efaf1rc,fit.measures=TRUE)
+
+#NOT PRINTING FACTOR LOADINGS TO SAVE SPACE
+efaplot(d2d_efaf1rc,"CFA with residual correlation: factor loadings for 1 factor 
+        model")
+
+#summary stats: 1 factor solution with joke/laugh~~called names/insults
+#1 factor solution with residual correlation
+modelsummary1(d2d_efaf1sumrc,"1 factor solution with RC")
+```
+
+### Table with EFA/CFA FINDINGS
+
+```{r,echo=FALSE}
+options(knitr.kable.NA = '',fig.pos='H')
+itemnum<-c("item1","item2","item3","item4","item5","item6","item7","item8","item9","item1-item3","CFI", "TLI","RMSEA","Chi-Square")
+itemname<-d2dlabel
+itemname[c(10:14)]<-NA
+#model 1: 1 factor solution (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(d2d_efaf1))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m1fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1])
+m1rc<-"--"
+m1fit<-round(c(d2dsum1$FIT[19],d2dsum1$FIT[20],d2dsum1$FIT[27],d2dsum1$FIT[6]),3)
+m1f1<-c(m1fl1,m1rc,m1fit)
+
+#model 2: rc (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(d2d_efaf1rc))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1])
+m2rc<-(standardizedsolution(d2d_efaf1rc))%>%
+    filter(op == "~~" & lhs == "minor10" & rhs =="minor12")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fit<-round(c(d2d_efaf1sumrc$FIT[19],d2d_efaf1sumrc$FIT[20],d2d_efaf1sumrc$FIT[27],d2d_efaf1sumrc$FIT[6]),3)
+m2f1<-c(m2fl1,m2rc,m2fit)
+
+#model 3: 2 factor (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(d2d_efaf2))%>%
+    filter(op == "=~" & lhs=="df1")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.60,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+fl2<-(standardizedsolution(d2d_efaf2))%>%
+    filter(op == "=~" & lhs=="df2")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.30,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+m3fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1])
+m3fl1[c(10:14)]<-NA
+m3fl2<-c(fl2[1,1],fl2[2,1],fl2[3,1],fl2[4,1],fl2[5,1],fl2[6,1],fl2[7,1],fl2[8,1],fl2[9,1])
+m3rc<-"--"
+m3fit<-round(c(d2dsum2$FIT[19],d2dsum2$FIT[20],d2dsum2$FIT[27],d2dsum2$FIT[6]),3)
+m3f2<-c(m3fl2,m3rc,m3fit)
+tableefam<-data.frame(cbind(itemnum,itemname,m1f1,m2f1,m3fl1,m3f2))
+row.names(tableefam) <- NULL
+colnames(tableefam)<-c("Item Number", "Item Name","Factor 1","Factor 1","Factor 1","Factor2")
+tableefam %>%
+  kbl(caption = "EFA/CFA") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")%>%
+  add_header_above(c(" " = 2, "Model 1" = 1, "Model 2" = 1, "Model 3" = 2))%>%
+  pack_rows("Residual Correlations",10,10,indent=FALSE)%>%
+  pack_rows("Fit Stats",11,14,indent=FALSE)%>%
+  footnote(general = "Model 1 is CFA with 1 factor. Model 2 is CFA with 1 factor and residual correlation between items 1 and 3. Model 3 is CFA with 2 factor solution. Only included highest absolute values for residual correlations.", threeparttable=T)
+```
+
+### CFA
+Fitting 1 factor based on EFA/CFA (using Canada subset).
+
+```{r,results='hide',fig.show='hide'}
+#1 factor model
+d2d_cfam<-'efa("efa")*df1 =~ minor10 + minor11 + minor12 + minor13 + minor14 + 
+minor15 + minor16 + minor17 + minor18'
+d2d_cfa <- cfa(model = d2d_cfam,
+               data = indi_cfa,
+               rotation = "oblimin",
+               estimator = "WLSMV",
+               ordered = TRUE)
+#summary stats
+d2dcfasum<-summary(d2d_cfa,fit.measures=TRUE)
+
+#1 factor solution with joke/laugh about~~called names/insults
+d2d_cfamrc<-'efa("efa")*df1 =~ minor10 + minor11 + minor12 + minor13 + minor14 +
+minor15 + minor16 + minor17 + minor18
+minor10~~minor12'
+d2d_cfarc <- cfa(model = d2d_cfamrc,
+               data = indi_cfa,
+               rotation = "oblimin",
+               estimator = "WLSMV",
+               ordered = TRUE)
+#summary stats
+d2dcfasumrc<-summary(d2d_cfarc,fit.measures=TRUE)
+
+
+#NOT PRINTING FACTOR LOADINGS FOR SPACE
+#plot loadings for 1 factor solution
+efaplot(d2d_cfa,"CFA: factor loadings for 1 factor model")
+#plot loadings with residual correlation
+efaplot(d2d_cfarc,"CFA with residual correlation: factor loadings
+        for 1 factor model")
+
+#table with fit statistics for CFA 
+modelsummary1(d2dcfasum,'CFA: 1 factor solution')
+modelsummary1(d2dcfasumrc,'CFA: w/ residual correlation')
+```
+
+### Table with CFA FINDINGS
+```{r,echo=FALSE}
+options(knitr.kable.NA = '',fig.pos='H')
+itemnum<-c("item1","item2","item3","item4","item5","item6","item7","item8","item9","item1-item3","CFI", "TLI","RMSEA","Chi-Square")
+itemname<-d2dlabel
+itemname[c(10:14)]<-NA
+#model 1: 1 factor solution
+fl1<-(standardizedsolution(d2d_cfa))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m1fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1])
+m1rc<-(standardizedsolution(d2d_cfa))%>%
+    filter(op == "~~" & lhs == "minor10" & rhs == "minor12")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m1fit<-round(c(d2dcfasum$FIT[19],d2dcfasum$FIT[20],d2dcfasum$FIT[27],d2dcfasum$FIT[6]),3)
+m1f1<-c(m1fl1,m1rc,m1fit)
+
+#model 2: rc
+fl1<-(standardizedsolution(d2d_cfarc))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1])
+m2rc<-(standardizedsolution(d2d_cfarc))%>%
+    filter(op == "~~" & lhs == "minor10" & rhs == "minor12")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fit<-round(c(d2dcfasumrc$FIT[19],d2dcfasumrc$FIT[20],d2dcfasumrc$FIT[27],d2dcfasumrc$FIT[6]),3)
+m2f1<-c(m2fl1,m2rc,m2fit)
+
+
+tablecfam<-data.frame(cbind(itemnum,itemname,m1f1,m2f1))
+row.names(tablecfam) <- NULL
+colnames(tablecfam)<-c("Item Number", "Item Name","Factor 1","Factor 1")
+tablecfam %>%
+  kbl(caption = "CFA") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")%>%
+  add_header_above(c(" " = 2, "Model 1" = 1, "Model 2" = 1))%>%
+  pack_rows("Residual Correlations",10,10,indent=FALSE)%>%
+  pack_rows("Fit Stats",11,14,indent=FALSE)%>%
+  footnote(general = "Model 1 is CFA with 1 factor. Model 2 is CFA with 1 factor and residual correlation between joke/laugh about you & called names/insults (items 1 and 3). Only included highest absolute values for residual correlations.",threeparttable=T)
+```
+
+## Major
+### Correlations:  
+Examining polychoric correlations for major.\
+**Major items are moderately to strongly correlated**
+```{r corr for major}
+#items in major
+majorlabel<-c("label1","label2","label3","label4","label5","label6","label7","label8","label9","label10","label11","label12","label13")
+
+#polychoric correlations for major
+vars_m<-indi%>%
+  select(evermajor1:evermajor13)
+poly_cor = polychoric(vars_m)
+rho_m = poly_cor$rho
+#saving correlations for parallel analysis/scree plot below
+save(rho_m, file = "polychoric_m")
+#ploting correlations
+#plotting correlation matrix
+corrplot(rho_m,"Polychoric Correlations for major",majorlabel)
+```
+
+### Scree plot  
+
+```{r scree plot for major,fig.show='hide',results='hide'}
+#Scree plot for major
+load("polychoric_m")
+eigen<-round(fa.parallel(rho_m, fm="wls", fa="fa",n.obs=nrow(indi), main = "Scree Plot for major")$pc.values,2)
+```
+
+| 1   |2|3|4|5|6|7|8|
+| :---|:----:|:----:|:----:|:---:|:---:|:---:|---:|         
+| `r eigen[1]`|`r eigen[2]`|`r eigen[3]`|`r eigen[4]`|`r eigen[5]`|`r eigen[6]`|`r eigen[7]`|`r eigen[8]`|
+
+### EFA/CFA:  
+EFA/CFA using diagonally weighted least squares (WLSMV) as the estimation method because of non-normal data.^[1]^ Fitting 1 factor and 2 factors models.
+```{r functions for major,echo=FALSE}
+#hiding code in pdf to save space using "echo=FALSE" in line above
+
+#will use this function to plot factor loadings below
+efaplot<-function(model,title) {
+  standardizedsolution(model) %>% 
+    filter(op == "=~") %>% 
+    mutate(item  = str_remove(rhs, "evermajor") %>% as.double(),
+           factor = str_remove(lhs, "df")) %>% 
+    ggplot(aes(x = est.std, xmin = ci.lower, xmax = ci.upper, y = item)) +
+    annotate(geom = "rect",
+             xmin = -1, xmax = 1,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey90") +
+    annotate(geom = "rect",
+             xmin = -0.7, xmax = 0.7,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey93") +
+    annotate(geom = "rect",
+             xmin = -0.4, xmax = 0.4,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey96") +
+    geom_vline(xintercept = 0, color = "white") +
+    geom_pointrange(aes(alpha = abs(est.std) < 0.4),
+                    fatten = 5) +
+    geom_text(aes(label = item, color = abs(est.std) < 0.4),
+              size = 2) +
+    scale_color_manual(values = c("white", "transparent")) +
+    scale_alpha_manual(values = c(1, 1/3)) +
+    scale_x_continuous(expression(lambda[standardized]), 
+                       expand = c(0, 0), limits = c(-1, 1),
+                       breaks = c(-1, -0.7, -0.4, 0, 0.4, 0.7, 1),
+                       labels = c("-1", "-.7", "-.4", "0", ".4", ".7", "1")) +
+    scale_y_continuous(labels=majorlabel,breaks = 1:13, sec.axis =  sec_axis(~ . * 1,labels=majorlabel, breaks = 1:13)) +
+    ggtitle(title) +
+    theme(legend.position = "none") +
+    facet_wrap(~ factor, labeller = label_both)
+}
+
+#function to create table to compare fit statistics
+#used in chunk of code after plots of factor loadings
+modelsummary<- function (m1sum,m2sum,m3sum){
+  model1<- c(m1sum$FIT[6],m1sum$FIT[8],m1sum$FIT[19],m1sum$FIT[20],m1sum$FIT[27])
+  model2<- c(m2sum$FIT[6],m2sum$FIT[8],m2sum$FIT[19],m2sum$FIT[20],m2sum$FIT[27])
+  model3<- c(m3sum$FIT[6],m3sum$FIT[8],m3sum$FIT[19],m3sum$FIT[20],m3sum$FIT[27])
+  model<-data.frame(rbind(model1,model2,model3))
+  colnames(model) <- c('Chi-squared','Chi-squared p-value','CFI','TFI','RMSEA')
+  rownames(model) <- c('1 factor solution','2 factor solution','3 factor solution')
+  model<-round(model,3)
+  model<-model %>%
+    mutate(`Chi-squared p-value`=ifelse(`Chi-squared p-value`==0,"<.0001",`Chi-squared p-value`))
+  model
+}
+```
+
+```{r major,results='hide'}
+#1 factor model
+major_1m<-'efa("efa")*df1 =~ evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13'
+major_efaf1 <- cfa(model = major_1m,
+                   data = indi,
+                   rotation = "oblimin",
+                   estimator = "WLSMV",
+                   ordered = TRUE)
+#summary stats
+majorsum1<-summary(major_efaf1,fit.measures=TRUE)
+
+#2 factor model
+major_2m<-'efa("efa")*df1 +
+efa("efa")*df2 =~evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13'
+major_efaf2 <- cfa(model = major_2m,
+                   data = indi,
+                   rotation = "oblimin",
+                   estimator = "WLSMV",
+                   ordered = TRUE)
+#summary stats
+majorsum2<-summary(major_efaf2,fit.measures=TRUE)
+
+#3 factor model
+major_3m<-'efa("efa")*df1 + efa("efa")*df2 +
+efa("efa")*df3 =~evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13'
+major_efaf3 <- cfa(model = major_3m,
+                   data = indi,
+                   rotation = "oblimin",
+                   estimator = "WLSMV",
+                   ordered = TRUE)
+#summary stats
+majorsum3<-summary(major_efaf3,fit.measures=TRUE)
+```
+
+```{r plots,message=FALSE,warning=FALSE, fig.show='hide'}
+#NOT PRINTING FACTOR LOADINGS TO SAVE SPACE
+#plot loadings for 1 factor solution
+efaplot(major_efaf1,"EFA/CFA: major factor loadings for 1 factor model")
+#plot loadings for 2 factor solution
+efaplot(major_efaf2,"EFA/CFA: major factor loadings for 2 factors model")
+#plot loadings for 3 factor solution
+efaplot(major_efaf3,"EFA/CFA: major factor loadings for 3 factors model")
+```
+**In the 2 factor solution, Factor 1 comprises of more systemic/institutionalized discrimination ($\lambda$=0.45-0.93). Whereas Factor 2 has items that are more interpersonal discrimination ($\lambda$=0.53-0.93).**\
+**In the factor 1 solution, $\lambda$=0.69-0.83.**
+  
+### Comparing fit statistics
+```{r major fit stats,results='hide'}
+#table with fit statistics for EFA/CFA 
+modelsummary(majorsum1,majorsum2,majorsum3)
+```
+```{r}
+#Modification Indices (MI) and Standardized Expected Parameter Change (SEPC): 1-factor solution
+m1<-modindices(major_efaf1,sort=TRUE)
+```
+```{r,echo=FALSE}
+m1$lhs<-ifelse(m1$lhs=="evermajor1",majorlabel[1],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor2",majorlabel[2],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor3",majorlabel[3],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor4",majorlabel[4],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor5",majorlabel[5],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor6",majorlabel[6],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor7",majorlabel[7],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor8",majorlabel[8],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor9",majorlabel[9],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor10",majorlabel[10],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor11",majorlabel[11],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor12",majorlabel[12],m1$lhs)
+m1$lhs<-ifelse(m1$lhs=="evermajor13",majorlabel[13],m1$lhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor1",majorlabel[1],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor2",majorlabel[2],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor3",majorlabel[3],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor4",majorlabel[4],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor5",majorlabel[5],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor6",majorlabel[6],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor7",majorlabel[7],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor8",majorlabel[8],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor9",majorlabel[9],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor10",majorlabel[10],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor11",majorlabel[11],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor12",majorlabel[12],m1$rhs)
+m1$rhs<-ifelse(m1$rhs=="evermajor13",majorlabel[13],m1$rhs)
+m1 %>%
+  as_tibble() %>%
+  select(lhs,op, rhs,mi)%>%
+  filter(mi>=7)%>%
+  pander(caption="MI for 1-factor solution")
+m1 %>%
+  as_tibble() %>%
+  filter(mi>=7)%>%
+  select(lhs,op,rhs,sepc.all)%>%
+  pander(caption="EPC for 1-factor solution")
+```
+```{r}
+#Modification Indices (MI) and Standardized Expected Parameter Change (SEPC): 2-factor solution
+m2<-modindices(major_efaf2,sort=TRUE)  
+```
+```{r,echo=FALSE}
+m2$lhs<-ifelse(m2$lhs=="evermajor1",majorlabel[1],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor2",majorlabel[2],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor3",majorlabel[3],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor4",majorlabel[4],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor5",majorlabel[5],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor6",majorlabel[6],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor7",majorlabel[7],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor8",majorlabel[8],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor9",majorlabel[9],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor10",majorlabel[10],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor11",majorlabel[11],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor12",majorlabel[12],m2$lhs)
+m2$lhs<-ifelse(m2$lhs=="evermajor13",majorlabel[13],m2$lhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor1",majorlabel[1],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor2",majorlabel[2],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor3",majorlabel[3],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor4",majorlabel[4],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor5",majorlabel[5],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor6",majorlabel[6],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor7",majorlabel[7],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor8",majorlabel[8],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor9",majorlabel[9],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor10",majorlabel[10],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor11",majorlabel[11],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor12",majorlabel[12],m2$rhs)
+m2$rhs<-ifelse(m2$rhs=="evermajor13",majorlabel[13],m2$rhs)
+m2 %>%
+  as_tibble() %>%
+  filter(mi>=1)%>%
+  select(lhs,op,rhs,mi)%>%
+  pander(caption="MI for 2-factor solution")
+m2 %>%
+  as_tibble() %>%
+  filter(mi>=1)%>%
+  select(lhs,op,rhs,sepc.all)%>%
+  pander(caption="EPC for 2-factor solution")
+```
+
+### Including residual correlation 
+```{r,results='hide',fig.show='hide'}
+#1 factor model with threatened with phy/sexual attack~~phy attacked
+major_1mrc<-'efa("efa")*df1 =~ evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13
+evermajor10~~evermajor11'
+major_efaf1rc <- cfa(model = major_1mrc,
+                   data = indi,
+                   rotation = "oblimin",
+                   estimator = "WLSMV",
+                   ordered = TRUE)
+
+major_efafsum1rc<-summary(major_efaf1rc,fit.measures=TRUE)
+#NOT PRINTING FACTOR LOADINGS TO SAVE SPACE
+efaplot(major_efaf1rc,"CFA with residual correlation: major factor loadings for 1 factor
+        model")
+
+#summary stats with threat phy/sexual attack~~phy attacked
+modelsummary1(major_efafsum1rc,"with residual correlation")
+```
+
+
+### Table with EFA/CFA FINDINGS
+```{r,echo=FALSE}
+options(knitr.kable.NA = '',fig.pos='H')
+itemnum<-c("item1","item2","item3","item4","item5","item6","item7","item8","item9","item10","item11","item12","item13",
+           "item10-item11","CFI", "TLI","RMSEA","Chi-Square")
+itemname<-majorlabel
+itemname[c(14:18)]<-NA
+#model 1: 1 factor solution (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_efaf1))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m1fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m1rc<-"--"
+m1fit<-round(c(majorsum1$FIT[19],majorsum1$FIT[20],majorsum1$FIT[27],majorsum1$FIT[6]),3)
+m1f1<-c(m1fl1,m1rc,m1fit)
+
+#model 2: rc (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_efaf1rc))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m2rc<-(standardizedsolution(major_efaf1rc))%>%
+    filter(op == "~~" & lhs == "evermajor10"  & rhs == "evermajor11")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fit<-round(c(major_efafsum1rc$FIT[19],major_efafsum1rc$FIT[20],major_efafsum1rc$FIT[27],major_efafsum1rc$FIT[6]),3)
+m2f1<-c(m2fl1,m2rc,m2fit)
+
+#model 3: 2 factor (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_efaf2))%>%
+    filter(op == "=~" & lhs=="df1")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.30,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+fl2<-(standardizedsolution(major_efaf2))%>%
+    filter(op == "=~" & lhs=="df2")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.35,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+m3fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m3fl1[c(14:18)]<-NA 
+m3fl2<-c(fl2[1,1],fl2[2,1],fl2[3,1],fl2[4,1],fl2[5,1],fl2[6,1],fl2[7,1],fl2[8,1],fl2[9,1],fl2[10,1],fl2[11,1],fl2[12,1],fl2[13,1])
+m3rc<-"--"
+m3fit<-round(c(majorsum2$FIT[19],majorsum2$FIT[20],majorsum2$FIT[27],majorsum2$FIT[6]),3)
+m3f2<-c(m3fl2,m3rc,m3fit)
+
+#model 4: 3 factors (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_efaf3))%>%
+    filter(op == "=~" & lhs=="df1")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.63,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+fl2<-(standardizedsolution(major_efaf3))%>%
+    filter(op == "=~" & lhs=="df2")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.70,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+fl3<-(standardizedsolution(major_efaf3))%>%
+    filter(op == "=~" & lhs=="df3")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.50,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+m4fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m4fl1[c(14:18)]<-NA 
+m4fl2<-c(fl2[1,1],fl2[2,1],fl2[3,1],fl2[4,1],fl2[5,1],fl2[6,1],fl2[7,1],fl2[8,1],fl2[9,1],fl2[10,1],fl2[11,1],fl2[12,1],fl2[13,1])
+m4fl2[c(14:18)]<-NA
+m4fl3<-c(fl3[1,1],fl3[2,1],fl3[3,1],fl3[4,1],fl3[5,1],fl3[6,1],fl3[7,1],fl3[8,1],fl3[9,1],fl3[10,1],fl3[11,1],fl3[12,1],fl3[13,1])
+m4rc<-"--"
+m4fit<-round(c(majorsum3$FIT[19],majorsum3$FIT[20],majorsum3$FIT[27],majorsum3$FIT[6]),3)
+m4f3<-c(m4fl3,m4rc,m4fit)
+
+tableefam<-data.frame(cbind(itemnum,itemname,m1f1,m2f1,m3fl1,m3f2,m4fl1,m4fl2,m4f3))
+row.names(tableefam) <- NULL
+colnames(tableefam)<-c("Item #", "Item Name","F1","F1","F1","F2","F1","F2","F3")
+tableefam %>%
+  kbl(caption = "EFA/CFA for major") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")%>%
+  add_header_above(c(" " = 2, "Model 1" = 1, "Model 2" = 1, "Model 3" = 2,"Model 4"=3))%>%
+  pack_rows("Residual Correlations",14,14,indent=FALSE)%>%
+  pack_rows("Fit Stats",15,18,indent=FALSE)%>%
+  footnote(general = "Model 1 is CFA with 1 factor. Model 2 is CFA with 1 factor and residual correlation between threatened with phy/sexual attack & phy attacked (items 10 and 11). Model 3 is CFA with 2 factor solution. Model 4 is CFA with 3 factor solution. Only included highest absolute values for residual correlations.",threeparttable=T)
+```
+### CFA
+Fitting 1 factor based on EFA/CFA (using Canada subset).
+
+```{r,results='hide',fig.show='hide'}
+#1 factor model
+major_cfam<-'efa("efa")*df1 =~ evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13'
+major_cfa <- cfa(model = major_cfam,
+                 data = indi_cfa,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+#summary stats
+majorcfasum<-summary(major_cfa,fit.measures=TRUE)
+
+#1 factor solution with threatened with phy/sexual attack~~phy attacked
+major_cfamrc<-'efa("efa")*df1 =~ evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13
+evermajor10~~evermajor11'
+major_cfarc <- cfa(model = major_cfamrc,
+                 data = indi_cfa,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+#summary stats
+majorcfasumrc<-summary(major_cfarc,fit.measures=TRUE)
+
+#NOT PRINTING FACTOR LOADINGS TO SAVE SPACE
+#plot loadings for 1 factor solution
+efaplot(major_cfa,"CFA: major factor loadings for 1 factor model")
+#with residual correlation
+efaplot(major_cfarc,"CFA with residual correlation: major factor loadings for 1 factor
+        model")
+
+#table with fit statistics for CFA
+#1 factor solution
+modelsummary1(majorcfasum,'CFA: 1 factor solution')
+#1 factor solution with residual correlation
+modelsummary1(majorcfasumrc,'with residual correlation')
+```
+
+Fitting 2 factor (using Canada subset).
+
+```{r,results='hide',fig.show='hide'}
+#2 factor model
+major_cfam2<-'factor1 =~evermajor1 + evermajor2 + evermajor3 + evermajor4 + evermajor5 + 
+evermajor6
+factor2 =~ evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13'
+major_cfa2 <- cfa(model = major_cfam2,data = indi_cfa,
+                 rotation = "oblimin",
+                 estimator = "WLSMV",
+                 ordered = TRUE)
+
+#summary stats
+majorcfasum2<-summary(major_cfa2,fit.measures=TRUE)
+
+#NOT PRINTING FACTOR LOADINGS TO SAVE SPACE
+#plot loadings for 2 factor solution
+efaplot(major_cfa2,"CFA: major factor loadings for 2 factor model")
+
+#table with fit statistics for CFA 
+modelsummary1(majorcfasum2,'CFA: 2 factor solution')
+```
+
+
+### Table with CFA FINDINGS
+```{r,echo=FALSE}
+options(knitr.kable.NA = '',fig.pos='H')
+itemnum<-c("item1","item2","item3","item4","item5","item6","item7","item8","item9","item10","item11","item12","item13",
+           "item10-item11","CFI", "TLI","RMSEA","Chi-Square")
+itemname<-majorlabel
+itemname[c(14:18)]<-NA
+#model 1: 1 factor solution (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_cfa))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m1fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m1rc<-"--"
+m1fit<-round(c(majorcfasum$FIT[19],majorcfasum$FIT[20],majorcfasum$FIT[27],majorcfasum$FIT[6]),3)
+m1f1<-c(m1fl1,m1rc,m1fit)
+
+#model 2: rc (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_cfarc))%>%
+    filter(op == "=~")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m2rc<-(standardizedsolution(major_cfarc))%>%
+    filter(op == "~~" & lhs == "evermajor10" & rhs == "evermajor11")%>%
+    select(est.std)%>%
+    mutate_if(is.numeric, ~round(., 3))
+m2fit<-round(c(majorcfasumrc$FIT[19],majorcfasumrc$FIT[20],majorcfasumrc$FIT[27],majorcfasumrc$FIT[6]),3)
+m2f1<-c(m2fl1,m2rc,m2fit)
+
+#model 3: 2 factor (fl=factor loadings, rc=residual correlation, fit=fit stats)
+fl1<-(standardizedsolution(major_cfa2))%>%
+    filter(op == "=~" & lhs=="factor1")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.30,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+fl2<-(standardizedsolution(major_cfa2))%>%
+    filter(op == "=~" & lhs=="factor2")%>%
+    select(est.std)%>%
+    mutate(est.std=ifelse(est.std<.35,NA,est.std))%>%
+    mutate_if(is.numeric, ~round(., 3))
+m3fl1<-c(fl1[1,1],fl1[2,1],fl1[3,1],fl1[4,1],fl1[5,1],fl1[6,1],fl1[7,1],fl1[8,1],fl1[9,1],fl1[10,1],fl1[11,1],fl1[12,1],fl1[13,1])
+m3fl1[c(14:18)]<-NA 
+m3fl2<-c(fl2[8,1],fl2[9,1],fl2[10,1],fl2[11,1],fl2[12,1],fl2[13,1],fl2[1,1],fl2[2,1],fl2[3,1],fl2[4,1],fl2[5,1],fl2[6,1],fl2[7,1])
+m3rc<-"--"
+m3fit<-round(c(majorcfasum2$FIT[19],majorcfasum2$FIT[20],majorcfasum2$FIT[27],majorcfasum2$FIT[6]),3)
+m3f2<-c(m3fl2,m3rc,m3fit)
+
+
+tableefam<-data.frame(cbind(itemnum,itemname,m1f1,m2f1,m3fl1,m3f2))
+row.names(tableefam) <- NULL
+colnames(tableefam)<-c("Item #", "Item Name","F1","F1","F1","F2")
+tableefam %>%
+  kbl(caption = "CFA for major") %>%
+  kable_classic(full_width = F, html_font = "Cambria")%>%
+  kable_styling(latex_options = "HOLD_position")%>%
+  add_header_above(c(" " = 2, "Model 1" = 1, "Model 2" = 1, "Model 3" = 2))%>%
+  pack_rows("Residual Correlations",14,14,indent=FALSE)%>%
+  pack_rows("Fit Stats",15,18,indent=FALSE)%>%
+  footnote(general = "Model 1 is CFA with 1 factor. Model 2 is CFA with 1 factor and residual correlation between threatened with phy/sexual attack & phy attacked (items 10 and 11). Model 3 is CFA with 2 factor solution. Only included highest absolute values for residual correlations.",threeparttable=T)
+```
+
+## 2ND ORDER
+```{r,results='hide',}
+#need to change anticipated scoring (currently -1 to 3 --> 0 to 4)
+for (i in 384:394){
+  indi_cfa[,i]<-indi_cfa[,i]+1
+}
+secondmodel <- 'major=~evermajor1 + evermajor2 + evermajor3 + evermajor4 + 
+evermajor5 + evermajor6 + evermajor7 + evermajor8 + evermajor9 + evermajor10 + 
+evermajor11 + evermajor12 + evermajor13
+evermajor10~~evermajor11
+day =~ minor10 + minor11 + minor12 + minor13 + minor14 + 
+minor15 + minor16 + minor17 + minor18
+minor10~~minor12
+anti =~anticipated1 + anticipated2 + anticipated3 + anticipated5 + anticipated6 + anticipated8 + anticipated9 + anticipated10 + anticipated11 
+global =~major + day + anti 
+'
+secondfit <- cfa(secondmodel, data=indi_cfa) 
+secondsum<-summary(secondfit,fit.measures=TRUE) 
+```
+```{r}
+#model summary 
+modelsummary2(secondsum,"second order")
+
+```
+
+## REFERENCE
+
+| 1. Li, C. H. (2016). Confirmatory factor analysis with ordinal data: Comparing robust maximum likelihood and diagonally weighted least squares. Behavior research methods, 48(3), 936-949.
